@@ -3,5 +3,11 @@ pandas
 numpy
 scikit-learn
 plotly
+pydeck
 folium
 streamlit-folium
+python-dotenv
+SpeechRecognition
+google-genai
+streamlit-geolocation
+reportlab
