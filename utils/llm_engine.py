@@ -1,147 +1,91 @@
 import os
-from pathlib import Path
-
+import time
+import streamlit as st
 from dotenv import load_dotenv
 from google import genai
 
+load_dotenv()
 
-# ============================================================
-# LOAD .ENV FROM PROJECT ROOT
-# ============================================================
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-ENV_FILE = PROJECT_ROOT / ".env"
-
-load_dotenv(ENV_FILE, override=True)
-
-
-# ============================================================
-# GEMINI CONFIGURATION
-# ============================================================
-
-MODEL_NAME = "gemini-3.6-flash"
-
-
-def generate_grounded_answer(
-    question,
-    context,
-    zone=None,
-    recommendation=None
-):
-
-    api_key = os.getenv("GEMINI_API_KEY")
-
-    if not api_key:
-        return (
-            "⚠️ Gemini API key was not found.\n\n"
-            f"Expected .env file at:\n{ENV_FILE}\n\n"
-            "Make sure your .env contains:\n"
-            "GEMINI_API_KEY=your_key"
-        )
-
+def _get_api_key():
     try:
+        key = st.secrets.get("GEMINI_API_KEY")
+        if key:
+            return key
+    except Exception:
+        pass
+    return os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
-        client = genai.Client(
-            api_key=api_key
-        )
+MODEL_CANDIDATES = [
+    "gemini-3.5-flash-lite",
+    "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-2.5-flash",
+    "gemini-flash-lite-latest",
+]
 
-        # ----------------------------------------------------
-        # ZONE DATA
-        # ----------------------------------------------------
+def _fallback_answer(question, zone, recommendation):
+    name = str(zone.get("zone", "this zone"))
+    score = float(zone.get("priority_score", 0))
+    temp = float(zone.get("temperature", 0))
+    green = float(zone.get("green_cover", 0))
+    pollution = str(zone.get("pollution", "unknown")).lower()
+    species = recommendation.get("species", "a suitable species")
+    trees = int(recommendation.get("trees", 0))
+    level = "high" if score >= 70 else "medium" if score >= 50 else "low"
+    return (
+        f"**{name} is currently a {level} priority zone** with an AI priority "
+        f"score of {score:.0f}/100. The decision is supported by {temp:.1f}°C "
+        f"temperature, {green:.1f}% green cover, and {pollution} pollution exposure. "
+        f"UrbanLeaf recommends **{species}** with an estimated intervention of "
+        f"about **{trees:,} trees**. Gemini is temporarily unavailable, so this "
+        f"response is using UrbanLeaf's deterministic decision engine and knowledge base."
+    )
 
-        zone_information = "No zone information available."
+def generate_grounded_answer(question, context, zone, recommendation):
+    api_key = _get_api_key()
+    if not api_key:
+        return "⚠️ Gemini API key is not configured. Add GEMINI_API_KEY to Streamlit Cloud Secrets."
 
-        if zone is not None:
-
-            zone_information = f"""
-Zone: {zone.get('zone', 'Unknown')}
-Temperature: {zone.get('temperature', 'Unknown')} °C
-Green Cover: {zone.get('green_cover', 'Unknown')}%
-Pollution: {zone.get('pollution', 'Unknown')}
-Plantable Area: {zone.get('plantable_area', 'Unknown')} m²
-Population Density: {zone.get('population_density', 'Unknown')}
-Priority Score: {zone.get('priority_score', 'Unknown')}
-"""
-
-        # ----------------------------------------------------
-        # TREE RECOMMENDATION
-        # ----------------------------------------------------
-
-        recommendation_information = (
-            "No tree recommendation available."
-        )
-
-        if recommendation is not None:
-
-            recommendation_information = f"""
-Species: {recommendation.get('species', 'Unknown')}
-Trees: {recommendation.get('trees', 'Unknown')}
-Reason: {recommendation.get('reason', 'Unknown')}
-"""
-
-        # ----------------------------------------------------
-        # PROMPT
-        # ----------------------------------------------------
-
-        prompt = f"""
-You are UrbanLeaf AI.
-
-UrbanLeaf AI is an urban-greening decision-support
-platform that helps cities decide:
-
-WHERE to intervene,
-WHY an area is a priority,
-WHAT trees may be suitable,
-HOW MUCH planting may be appropriate,
-and WHAT the possible impact could be.
+    client = genai.Client(api_key=api_key)
+    prompt = f"""
+You are UrbanLeaf AI, an urban-greening decision-support copilot.
+Answer using ONLY the supplied UrbanLeaf context and zone data.
+Do not invent measurements. Be concise and practical.
+Distinguish current data from future/prototype scenarios.
 
 USER QUESTION:
 {question}
 
-CURRENT ZONE DATA:
-{zone_information}
+SELECTED ZONE:
+{zone.to_dict() if hasattr(zone, "to_dict") else zone}
 
 TREE RECOMMENDATION:
-{recommendation_information}
+{recommendation}
 
-RETRIEVED KNOWLEDGE:
+RETRIEVED URBANLEAF KNOWLEDGE:
 {context}
-
-RULES:
-
-1. Use the retrieved knowledge as supporting evidence.
-2. Use the supplied zone data when relevant.
-3. Never invent environmental measurements.
-4. Do not present prototype estimates as guaranteed
-   scientific predictions.
-5. Clearly distinguish real data from estimates.
-6. Explain WHY a recommendation was made.
-7. If information is unavailable, say so.
-8. Keep the answer concise and practical.
-9. Do not discuss internal software implementation.
-
-Give a natural, clear answer suitable for a
-municipal officer or hackathon judge.
 """
 
-        # ----------------------------------------------------
-        # GEMINI REQUEST
-        # ----------------------------------------------------
+    for model in MODEL_CANDIDATES:
+        for attempt in range(2):
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                )
+                answer = getattr(response, "text", None)
+                if answer:
+                    return answer
+            except Exception as exc:
+                message = str(exc).lower()
+                if any(x in message for x in ("503", "unavailable", "high demand", "429", "resource_exhausted", "quota")):
+                    time.sleep(1.0 + attempt)
+                    continue
+                if any(x in message for x in ("404", "not found", "not supported")):
+                    break
+                if "401" in message or "403" in message or "api key" in message:
+                    return "⚠️ Gemini authentication/configuration error. Check GEMINI_API_KEY in Streamlit Cloud Secrets."
+                break
 
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt
-        )
+    return _fallback_answer(question, zone, recommendation)
 
-        if response.text:
-
-            return response.text.strip()
-
-        return "UrbanLeaf AI could not generate an answer."
-
-    except Exception as e:
-
-        return (
-            "⚠️ Gemini error:\n\n"
-            f"{e}"
-        )
