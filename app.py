@@ -126,25 +126,86 @@ def map_color(priority):
     return {"High": [220, 70, 70, 200], "Medium": [240, 180, 50, 200], "Low": [60, 180, 110, 200]}.get(priority, [60,180,110,200])
 
 
-def build_map(data, height=330):
+def build_map(data, height=330, selected_zone_name=None):
+    """Interactive city map: clicking a marker changes the active zone."""
     map_df = data.copy()
-    map_df["color"] = map_df["priority"].apply(map_color)
+
+    map_df["is_selected"] = (
+        map_df["zone"].astype(str) == str(selected_zone_name)
+        if selected_zone_name is not None else False
+    )
     map_df["real_aq_status"] = map_df.apply(real_aq_status, axis=1)
     map_df["real_aq_flag"] = map_df["real_aq_status"].apply(
-        lambda x: "🌍 REAL AQ DATA" if str(x).startswith("REAL AQ") else "AQ cache unavailable"
+        lambda x: "🌍 REAL AQ DATA"
+        if str(x).startswith("REAL AQ") else "AQ cache unavailable"
     )
+
+    map_df["color"] = map_df["priority"].apply(map_color)
+    selected_count = int(map_df["is_selected"].sum())
+    if selected_count:
+        # Pandas treats a list like [r,g,b,a] as a 2-D ndarray when
+        # assigning to a single column. Use one list object per selected row.
+        map_df.loc[map_df["is_selected"], "color"] = map_df.loc[
+            map_df["is_selected"], "color"
+        ].apply(lambda _: [0, 126, 86, 235])
+
+    map_df["radius"] = map_df["priority_score"] * 11
+    if selected_count:
+        map_df.loc[map_df["is_selected"], "radius"] = (
+            map_df.loc[map_df["is_selected"], "priority_score"] * 20
+        ).clip(lower=300)
+
     layer = pdk.Layer(
-        "ScatterplotLayer", data=map_df,
-        get_position=["longitude", "latitude"], get_fill_color="color",
-        get_radius="priority_score * 11", radius_min_pixels=6, radius_max_pixels=30,
-        pickable=True, auto_highlight=True,
+        "ScatterplotLayer",
+        data=map_df,
+        id="city-priority-zones",
+        get_position=["longitude", "latitude"],
+        get_fill_color="color",
+        get_radius="radius",
+        radius_min_pixels=6,
+        radius_max_pixels=42,
+        pickable=True,
+        auto_highlight=True,
     )
-    view = pdk.ViewState(latitude=18.54, longitude=73.87, zoom=10.35, pitch=0)
+
+    selected_rows = map_df[map_df["is_selected"]]
+    if not selected_rows.empty:
+        center_lat = float(selected_rows.iloc[0]["latitude"])
+        center_lon = float(selected_rows.iloc[0]["longitude"])
+        zoom = 13
+    else:
+        center_lat, center_lon, zoom = 18.54, 73.87, 10.35
+
+    view = pdk.ViewState(
+        latitude=center_lat,
+        longitude=center_lon,
+        zoom=zoom,
+        pitch=0,
+    )
+
     tooltip = {
-        "html": "<b>{zone}</b><br/>AI Priority: {priority_score}<br/>Temperature: {temperature} °C<br/>Green Cover: {green_cover}%<br/>Pollution: {pollution}<br/>Priority: {priority}<br/><br/><b>{real_aq_flag}</b><br/>{real_aq_status}",
-        "style": {"backgroundColor":"#ffffff", "color":"#183c2c", "fontSize":"12px"},
+        "html": (
+            "<b>{zone}</b><br/>"
+            "AI Priority: {priority_score}<br/>"
+            "Temperature: {temperature} °C<br/>"
+            "Green Cover: {green_cover}%<br/>"
+            "Pollution: {pollution}<br/>"
+            "Priority: {priority}<br/><br/>"
+            "<b>{real_aq_flag}</b><br/>{real_aq_status}"
+        ),
+        "style": {
+            "backgroundColor": "#ffffff",
+            "color": "#183c2c",
+            "fontSize": "12px",
+        },
     }
-    return pdk.Deck(map_style=None, initial_view_state=view, layers=[layer], tooltip=tooltip), height
+
+    return pdk.Deck(
+        map_style=None,
+        initial_view_state=view,
+        layers=[layer],
+        tooltip=tooltip,
+    ), height
 
 
 def species_library():
@@ -452,11 +513,47 @@ if nav == "🏠 Dashboard":
     left,right = st.columns([1.7,1])
 
     with left:
-        st.markdown("<div class='card'><div class='card-title'>🗺️ City Priority Map</div>", unsafe_allow_html=True)
-        deck,height = build_map(df, 340)
-        st.pydeck_chart(deck, height=height)
-        st.caption("🔴 High   🟡 Medium   🟢 Low • Larger circles = higher AI priority")
-        st.caption("🌍 Map tooltip also shows the nearest matched OpenAQ monitoring station and distance.")
+        st.markdown(
+            f"<div class='card'><div class='card-title'>🗺️ City Priority Map • Active: {selected_zone['zone']}</div>",
+            unsafe_allow_html=True,
+        )
+
+        deck, height = build_map(
+            df, 340, selected_zone["zone"]
+        )
+
+        map_event = st.pydeck_chart(
+            deck,
+            height=height,
+            selection_mode="single-object",
+            on_select="rerun",
+            key="dashboard_city_priority_map",
+        )
+
+        try:
+            selected_objects = map_event.selection.objects.get(
+                "city-priority-zones", []
+            )
+        except Exception:
+            selected_objects = []
+
+        if selected_objects:
+            clicked_zone = selected_objects[0].get("zone")
+            if (
+                clicked_zone in zone_names
+                and clicked_zone != st.session_state.selected_zone_name
+            ):
+                st.session_state.selected_zone_name = clicked_zone
+                st.rerun()
+
+        st.caption(
+            "🔴 High   🟡 Medium   🟢 Low • "
+            "Click any zone marker to update the active location."
+        )
+        st.caption(
+            "🌍 Each selected zone uses its matched OpenAQ evidence "
+            "where available."
+        )
         st.markdown("</div>", unsafe_allow_html=True)
 
     with right:
@@ -490,6 +587,52 @@ if nav == "🏠 Dashboard":
             )
 
         st.markdown("</div>", unsafe_allow_html=True)
+
+    st.write("")
+    st.markdown(
+        f"### 🌍 Live Real Evidence — {selected_zone['zone']}"
+    )
+
+    selected_aq = get_real_aq(selected_zone)
+
+    if selected_aq:
+        station = selected_aq.get("nearest_station", "OpenAQ")
+        distance = selected_aq.get("distance_km")
+
+        evidence = []
+        for key, label in [
+            ("pm25", "PM2.5"),
+            ("pm10", "PM10"),
+            ("no2", "NO₂"),
+            ("so2", "SO₂"),
+        ]:
+            if key in selected_aq:
+                try:
+                    value = f"{float(selected_aq[key]):.2f}"
+                except Exception:
+                    value = str(selected_aq[key])
+                evidence.append((label, value))
+
+        if evidence:
+            eco = st.columns(min(4, len(evidence)))
+            for i, (label, value) in enumerate(evidence):
+                with eco[i]:
+                    st.metric(f"🌍 {label}", value)
+
+        distance_text = (
+            f"{float(distance):.2f} km away"
+            if distance is not None
+            else "nearest matched station"
+        )
+
+        st.caption(
+            f"OpenAQ • {station} • {distance_text} • "
+            "Nearby monitoring-station evidence, not a phone measurement."
+        )
+    else:
+        st.info(
+            f"No cached OpenAQ match is available for {selected_zone['zone']}."
+        )
 
     st.write("")
     b1,b2,b3 = st.columns(3)
@@ -866,8 +1009,40 @@ elif nav == "📍 Analyze My Location":
 # ============================================================
 elif nav == "🗺️ City Map":
     st.subheader("🗺️ Pune Urban Greening Priority Map")
-    deck,_ = build_map(df, 560)
-    st.pydeck_chart(deck, height=560)
+
+    deck, _ = build_map(
+        df, 560, selected_zone["zone"]
+    )
+
+    city_map_event = st.pydeck_chart(
+        deck,
+        height=560,
+        selection_mode="single-object",
+        on_select="rerun",
+        key="city_map_zone_selector",
+    )
+
+    try:
+        city_selected_objects = city_map_event.selection.objects.get(
+            "city-priority-zones", []
+        )
+    except Exception:
+        city_selected_objects = []
+
+    if city_selected_objects:
+        clicked_zone = city_selected_objects[0].get("zone")
+        if (
+            clicked_zone in zone_names
+            and clicked_zone != st.session_state.selected_zone_name
+        ):
+            st.session_state.selected_zone_name = clicked_zone
+            st.rerun()
+
+    st.info(
+        f"🎯 Active zone: **{selected_zone['zone']}** • "
+        "Click any marker to update the UrbanLeaf decision."
+    )
+
     map_table_cols = ["zone","priority_score","priority","temperature","green_cover","pollution"]
     if "nearest_station" in df.columns:
         map_table_cols += ["nearest_station","distance_km"]
