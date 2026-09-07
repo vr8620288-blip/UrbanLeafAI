@@ -1,0 +1,16 @@
+zone,latitude,longitude,temperature,green_cover,pollution,population_density,plantable_area,existing_trees
+Hadapsar,18.5089,73.9260,37,8,High,High,4000,180
+Kharadi,18.5514,73.9380,36,10,High,High,3500,220
+Yerwada,18.5530,73.8790,38,7,High,High,3200,150
+Shivajinagar,18.5308,73.8470,35,12,Medium,High,2800,300
+Aundh,18.5590,73.8070,33,24,Medium,Medium,2200,520
+Baner,18.5590,73.7868,34,20,Medium,High,3000,450
+Kothrud,18.5074,73.8077,33,28,Low,Medium,1800,600
+Wagholi,18.5793,73.9830,36,9,High,High,4500,190
+Viman Nagar,18.5679,73.9143,35,14,High,High,2500,280
+Katraj,18.4529,73.8580,34,22,Medium,Medium,3000,410
+Kondhwa,18.4696,73.8895,36,11,High,High,3800,210
+Pimpri,18.6298,73.7997,37,13,High,High,5000,260
+Chinchwad,18.6270,73.7810,36,16,Medium,High,4200,340
+Warje,18.4875,73.7937,34,25,Low,Medium,2100,500
+Pashan,18.5426,73.7955,33,30,Low,Low,1600,650
